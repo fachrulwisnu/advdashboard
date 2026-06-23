@@ -1076,7 +1076,7 @@ export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allPro
             Executive Summary Overview
           </h3>
           <p className="text-xs text-gray-400 font-medium mt-0.5 font-sans">
-            Weekly Report Period: <strong className="text-gray-700">{report.date}</strong> &bull; <strong className="text-blue-600">{report.activeTotal} Active Projects</strong>
+            Weekly Report Period: <strong className="text-gray-700">{report.date}</strong> &bull; <strong className="text-blue-600 font-semibold">{report.activeTotal} Active Projects</strong><span className="text-slate-500 font-normal ml-1">(akumulasi proyek dalam fase FSD, DEV, SIT, UAT, & Change Request)</span>
           </p>
         </div>
       </div>

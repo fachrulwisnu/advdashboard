@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { DEFAULT_RAW_PROJECTS, FALLBACK_DATE } from "./data";
 import { sanitizeProjects, computeDashboardMetrics } from "./parser";
 import { Icon } from "./components/UI";
@@ -67,6 +67,26 @@ export default function App() {
     return sanitized;
   });
   const [isCustomLoaded, setIsCustomLoaded] = useState(false);
+  const [showSuccessAlert, setShowSuccessAlert] = useState(false);
+
+  // Sync banner visibility when isCustomLoaded changes
+  useEffect(() => {
+    if (isCustomLoaded) {
+      setShowSuccessAlert(true);
+    } else {
+      setShowSuccessAlert(false);
+    }
+  }, [isCustomLoaded]);
+
+  // Auto-hide banner after 5 seconds to maximize visual real estate
+  useEffect(() => {
+    if (isCustomLoaded && showSuccessAlert) {
+      const timer = setTimeout(() => {
+        setShowSuccessAlert(false);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [isCustomLoaded, showSuccessAlert]);
   const [activeTab, setActiveTab] = useState(0); // 0: Overview, 1: Pipeline, 2: SLA, 3: Category, 4: Projects
   const [isDragging, setIsDragging] = useState(false);
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
@@ -589,7 +609,7 @@ export default function App() {
         </header>
 
         {/* Status Indicator Banner */}
-        {isCustomLoaded && (
+        {isCustomLoaded && showSuccessAlert && (
           <div className="mx-6 mt-4.5 bg-emerald-50 border border-emerald-100/50 rounded-2xl p-3.5 px-4.5 flex items-center justify-between select-none animate-in fade-in duration-200">
             <div className="flex items-center gap-3 pr-2">
               <div className="p-2 bg-emerald-100 text-emerald-800 rounded-xl">
