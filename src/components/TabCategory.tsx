@@ -644,7 +644,7 @@ export function TabCategory({
       {/* Row Block 3: Requests by Division & Division SLA Leaderboard */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Requests by Division list card */}
-        <Card title="Requests by Division" sub={`10 divisi peminta terbanyak, sepanjang waktu (tidak termasuk IT)`} padding="p-6">
+        <Card title="Requests by Division" sub={`top 10 divisi request terbanyak`} padding="p-6">
           <div className="space-y-3.5 select-none animate-fade-in">
             {filteredDivisions.slice(0, 10).map((div, idx) => {
               const maxDiv = Math.max(...computedDivisions.map((d) => d.value), 1);
@@ -675,7 +675,7 @@ export function TabCategory({
         {/* Division SLA Leaderboard table card */}
         <Card
           title="Division SLA Leaderboard"
-          sub={`Ketercapaian DEV SLA per divisi (tidak termasuk IT & Wisesa) • Klik baris untuk detail`}
+          sub={`SLA DEV terhadap request User`}
           padding="p-0"
         >
           <div className="overflow-x-auto">
