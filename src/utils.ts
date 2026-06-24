@@ -239,47 +239,4 @@ export function getActiveSlaPool(dataset: any[]): any[] {
   });
 }
 
-export function getProjectMonthAndYear(item: any): { month: number; year: number } {
-  if (!item) return { month: 1, year: 2026 };
-
-  // Try Created time first
-  const dateStr = item["Created time"] || item["Created time "] || item["Tanggal Input Timeline"] || item["Tanggal Input Caldev"];
-  if (dateStr) {
-    const createdDate = new Date(dateStr);
-    if (createdDate && !isNaN(createdDate.getTime())) {
-      return { month: createdDate.getMonth() + 1, year: createdDate.getFullYear() };
-    }
-  }
-
-  // Try parsing from other fields like Tgl FPS disetujui
-  const otherDateStr = item["Tgl FPS disetujui"] || item["Tanggal Input Caldev"] || item["Tanggal Input Timeline"] || "";
-  const match = otherDateStr.match(/(\d{1,2})\s+(Jan|Feb|Mar|Apr|Mei|Jun|Jul|Ags|Agu|Sep|Okt|Oct|Nov|Des|Dec)[a-z]*\s+(\d{2,4})/i);
-  if (match) {
-    const mStr = match[2].toLowerCase();
-    const yStr = match[3];
-    const MONTH_MAP_LOWER: Record<string, number> = {
-      jan: 1, feb: 2, mar: 3, maret: 3, apr: 4, may: 5, mei: 5, jun: 6,
-      jul: 7, aug: 8, agu: 8, sep: 9, oct: 10, okt: 10, nov: 11, dec: 12, des: 12
-    };
-    const m = MONTH_MAP_LOWER[mStr] || 1;
-    let y = parseInt(yStr);
-    if (y < 100) y = 2000 + y;
-    return { month: m, year: y };
-  }
-
-  // Fallback to getProjectIntakeYear
-  const yearStr = getProjectIntakeYear(item);
-  const year = parseInt(yearStr) || 2025;
-
-  // Guess month from Q1/Q2/Q3/Q4 Project diajukan or similar
-  const diajukan = (item["Project diajukan"] || "").toString().toUpperCase();
-  if (diajukan.includes("Q1")) return { month: 1, year };
-  if (diajukan.includes("Q2")) return { month: 4, year };
-  if (diajukan.includes("Q3")) return { month: 7, year };
-  if (diajukan.includes("Q4")) return { month: 10, year };
-
-  return { month: 1, year };
-}
-
-
 
