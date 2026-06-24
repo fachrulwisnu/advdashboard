@@ -7,14 +7,27 @@ import { TabPipeline } from "./components/TabPipeline";
 import { TabSla } from "./components/TabSla";
 import { TabCategory } from "./components/TabCategory";
 import { TabProjects } from "./components/TabProjects";
+import static2025Data from "./Project 2025_2.json";
+import { getProjectMonthAndYear } from "./utils";
 
 function sanitizeAndLoadMasterJSON(rawJSONData: any[]): any[] {
   if (!rawJSONData || !Array.isArray(rawJSONData)) return [];
+
+  const MONTH_NAMES_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   return rawJSONData.map((row) => {
     // Standardize division mapping directly from the active JSON structural property keys
     const rawDiv = row["Owner Div"] || row["Owner Division"] || row["Divisi"] || "";
     const rawProjectName = row["Project Name"] || row["Nama Project"] || "";
+
+    // Dynamically reconstruct missing Period field if necessary
+    let period = row["Period"] || row["_period"] || "";
+    if (!period || period === "Unscheduled") {
+      const { month, year } = getProjectMonthAndYear(row);
+      const monthStr = MONTH_NAMES_SHORT[month - 1] || "Jan";
+      const yearShort = year.toString().substring(2);
+      period = `${monthStr}-${yearShort}`;
+    }
 
     return {
       ...row,
@@ -24,6 +37,7 @@ function sanitizeAndLoadMasterJSON(rawJSONData: any[]): any[] {
       "PIC Name": row["PIC Name"] ? String(row["PIC Name"]).trim() : "Unknown PIC",
       "Last Status": row["Last Status"] ? String(row["Last Status"]).trim() : "Unknown Status",
       "Type Project": row["Type Project"] ? String(row["Type Project"]).trim() : "Project Utama",
+      "Period": period,
       "(FSD) Status": row["(FSD) Status"] ? String(row["(FSD) Status"]).trim() : "",
       "(Dev) Status": row["(Dev) Status"] ? String(row["(Dev) Status"]).trim() : "",
       "(SIT) Status": row["(SIT) Status"] ? String(row["(SIT) Status"]).trim() : ""
@@ -35,6 +49,20 @@ declare global {
   interface Window {
     rawMasterDataset?: any[];
   }
+}
+
+function getUnifiedDataset(masterList: any[], static2025: any[]): any[] {
+  // 1. Take everything from master EXCEPT 2025 data (to avoid duplication/conflict)
+  const masterFiltered = masterList.filter((item) => {
+    const { year } = getProjectMonthAndYear(item);
+    return year !== 2025;
+  });
+
+  // Ensure 2025 static data is properly sanitized and has valid Period
+  const sanitizedStatic2025 = sanitizeAndLoadMasterJSON(static2025);
+
+  // 2. Merge with our exclusive 2025 source
+  return [...masterFiltered, ...sanitizedStatic2025];
 }
 
 function getBusinessOperationalData(dataset: any[]): any[] {
@@ -61,10 +89,11 @@ export default function App() {
   // ---- Internal Core States ----
   const [rawProjects, setRawProjects] = useState<any[]>(() => {
     const sanitized = sanitizeAndLoadMasterJSON(DEFAULT_RAW_PROJECTS);
+    const unified = getUnifiedDataset(sanitized, static2025Data);
     if (typeof window !== "undefined") {
-      window.rawMasterDataset = sanitized;
+      window.rawMasterDataset = unified;
     }
-    return sanitized;
+    return unified;
   });
   const [isCustomLoaded, setIsCustomLoaded] = useState(false);
   const [showSuccessAlert, setShowSuccessAlert] = useState(false);
@@ -319,13 +348,14 @@ export default function App() {
         }
 
         const sanitizedFullData = sanitizeAndLoadMasterJSON(parsed);
-        window.rawMasterDataset = sanitizedFullData;
+        const unifiedData = getUnifiedDataset(sanitizedFullData, static2025Data);
+        window.rawMasterDataset = unifiedData;
         console.log("Global State Ingested:", window.rawMasterDataset.length); // Must equal 530
 
-        setRawProjects(sanitizedFullData);
+        setRawProjects(unifiedData);
         setIsCustomLoaded(true);
         setActiveTab(0); // bounce user back to first view to immediately notice visual changes!
-        triggerAlert(`${sanitizedFullData.length} Records Loaded Successfully! Berhasil memproses & menyelaraskan database kustom Anda!`);
+        triggerAlert(`${unifiedData.length} Records Loaded Successfully! Berhasil memproses & menyelaraskan database kustom Anda!`);
       } catch (err: any) {
         triggerAlert(`Gagal mengurai JSON: ${err.message}`);
       }

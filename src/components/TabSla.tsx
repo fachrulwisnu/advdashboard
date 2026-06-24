@@ -3,7 +3,8 @@ import { DashboardDataset } from "../types";
 import { Card, Icon, Pill } from "./UI";
 import { PieChart, GroupedBarChart } from "./Charts";
 import { statusKindOfStatus } from "../parser";
-import { getActiveSlaPool } from "../utils";
+import { getActiveSlaPool, getProjectMonthAndYear } from "../utils";
+import project2025Data from "../Project 2025_2.json";
 
 
 function getProfessionalReason(rawReason: string | null | undefined): string {
@@ -116,6 +117,57 @@ export function TabSla({
   const startIdx = useMemo(() => MONTHS_LOWER[startMonth.toLowerCase()] ?? 0, [startMonth]);
   const endIdx = useMemo(() => MONTHS_LOWER[endMonth.toLowerCase()] ?? 11, [endMonth]);
 
+  const rawMasterDataset = useMemo(() => {
+    return (window as any).rawMasterDataset || rawAllProjects || [];
+  }, [rawAllProjects]);
+
+  const activeFilter = useMemo(() => {
+    return {
+      startMonth: (MONTHS_LOWER[startMonth.toLowerCase()] ?? 0) + 1,
+      endMonth: (MONTHS_LOWER[endMonth.toLowerCase()] ?? 11) + 1,
+      startYear: startYear ?? 2025,
+      endYear: endYear ?? 2026,
+    };
+  }, [startMonth, endMonth, startYear, endYear]);
+
+  const filteredData = useMemo(() => {
+    const { startMonth: sMonth, endMonth: eMonth, startYear: sYear, endYear: eYear } = activeFilter;
+    
+    if (!rawMasterDataset || rawMasterDataset.length === 0) return { data2025: [], data2026: [] };
+
+    const filtered = rawMasterDataset.filter(item => {
+      const lastStatus = (item["Last Status"] || "").toLowerCase();
+      const milestone = (item["Milestone"] || "").toUpperCase();
+      
+      // 1. STRICT EXCLUSION: Drop canceled/terminated projects completely
+      if (lastStatus.includes("cancel") || milestone === "CANCELED" || lastStatus.includes("terminated")) return false;
+
+      // 2. DYNAMIC MONTH FILTER using our robust helper
+      const { month: m, year: y } = getProjectMonthAndYear(item);
+      
+      // Check if within date range (considering Month and Year)
+      const withinYearRange = y >= sYear && y <= eYear;
+      const withinMonthRange = (m >= sMonth && m <= eMonth);
+      
+      return withinYearRange && withinMonthRange;
+    });
+
+    const d2025 = filtered.filter(item => {
+      const { year } = getProjectMonthAndYear(item);
+      return year === 2025;
+    });
+
+    const d2026 = filtered.filter(item => {
+      const { year } = getProjectMonthAndYear(item);
+      return year === 2026;
+    });
+
+    return {
+      data2025: d2025,
+      data2026: d2026
+    };
+  }, [rawMasterDataset, activeFilter]);
+
   // 1. Avg DEV SLA metric and related projects inside the active date range filter
   const activeDevSlaProjs = useMemo(() => {
     return filteredProjects.filter(p => p["DEV SLA"] === "Achieved" || (p._lateDev || 0) > 0);
@@ -133,11 +185,8 @@ export function TabSla({
 
   // 2026 DEV SLA metrics in selected range
   const activeDevSlaProjs2026 = useMemo(() => {
-    return filteredProjects.filter(p => {
-      const yr = String(p._year || p["Year"]);
-      return yr === "2026" && (p["DEV SLA"] === "Achieved" || (p._lateDev || 0) > 0);
-    });
-  }, [filteredProjects]);
+    return filteredData.data2026.filter(p => p["DEV SLA"] === "Achieved" || (p._lateDev || 0) > 0);
+  }, [filteredData.data2026]);
 
   const activeDevSlaAchievedCount2026 = useMemo(() => {
     return activeDevSlaProjs2026.filter(p => p["DEV SLA"] === "Achieved").length;
@@ -151,13 +200,8 @@ export function TabSla({
 
   // 2025 DEV SLA metrics for Like-for-Like period comparison
   const activeDevSlaProjs2025 = useMemo(() => {
-    return allProjects.filter(p => {
-      const yr = String(p._year || p["Year"]);
-      if (yr !== "2025") return false;
-      const mIdx = getProjMonthIdx(p);
-      return isMonthInRange(mIdx, startIdx, endIdx) && (p["DEV SLA"] === "Achieved" || (p._lateDev || 0) > 0);
-    });
-  }, [allProjects, startIdx, endIdx]);
+    return filteredData.data2025.filter(p => p["DEV SLA"] === "Achieved" || (p._lateDev || 0) > 0);
+  }, [filteredData.data2025]);
 
   const activeDevSlaAchievedCount2025 = useMemo(() => {
     return activeDevSlaProjs2025.filter(p => p["DEV SLA"] === "Achieved").length;
@@ -171,11 +215,8 @@ export function TabSla({
 
   // Define activeFailedProjects exactly as instructed
   const activeFailedProjects = useMemo(() => {
-    const sourceData = (window as any).rawMasterDataset || rawProjects || allProjects || filteredProjects || [];
-    return getBusinessOperationalData(sourceData).filter(item => {
-      const is2026 = (item["Intake"] || item["Year"] || item["_year"] || "").toString().includes("2026");
+    return filteredData.data2026.filter(item => {
       const lastStatus = (item["Last Status"] || "").trim().toLowerCase();
-      
       const slaState = (item["DEV SLA"] || item["DEV SLA STATE"] || item["SLA Status"] || "").trim().toLowerCase();
 
       // 1. STRICT EXCLUSION: Terminated or Canceled
@@ -191,9 +232,9 @@ export function TabSla({
       // 3. INCLUSION: Only keep genuine failures
       const isDevFailed = slaState.includes("not achieved") || slaState.includes("failed") || (item._lateDev || 0) > 0;
 
-      return is2026 && isDevFailed;
+      return isDevFailed;
     });
-  }, [rawProjects, allProjects, filteredProjects]);
+  }, [filteredData.data2026]);
 
   // Not Achieved in selected range (mapped directly to activeFailedProjects for system-wide sync)
   const devSlaNotAchievedProjs = activeFailedProjects;

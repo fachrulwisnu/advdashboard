@@ -2,7 +2,111 @@ import React, { useState, useMemo } from "react";
 import { DashboardDataset } from "../types";
 import { Card, Icon } from "./UI";
 import { statusGroupOf } from "../parser";
-import { getGlobalProjectDate, getGlobalProgressUpdate, formatLogWithNewLines, getProjectIntakeYear, formatUATBatchText, calculateProjectAverageScore, getActiveSlaPool } from "../utils";
+import { getGlobalProjectDate, getGlobalProgressUpdate, formatLogWithNewLines, getProjectIntakeYear, formatUATBatchText, calculateProjectAverageScore, getActiveSlaPool, getProjectMonthAndYear } from "../utils";
+import project2025Data from "../Project 2025_2.json";
+
+function getStatic2025Metrics(dataArray: any[]) {
+  let completed = 0;
+  let inProgress = 0;
+  let slaAchievedCount = 0;
+  let slaFailedCount = 0;
+  let delayedDays = 0;
+
+  if (!dataArray || !Array.isArray(dataArray)) return { slaPercentage: 0, inProgress: 0, completed: 0, delayedDays: 0 };
+
+  dataArray.forEach(item => {
+    const lastStatus = (item["Last Status"] || "").toLowerCase();
+    const milestone = (item["Milestone"] || "").toUpperCase();
+    const devSla = (item["DEV SLA"] || "").toLowerCase();
+    const liveSla = (item["Live SLA"] || "").toLowerCase();
+    const slaMandays = (item["SLA Mandays"] || "").toLowerCase();
+    const lateDays = item["_lateDev"] || item["(Dev) Late Days"] || 0;
+
+    // STRICT EXCLUSION: Skip canceled/terminated projects
+    if (lastStatus.includes("cancel") || milestone === "CANCELED" || lastStatus.includes("terminated")) return;
+
+    // EVALUATION: Completed vs In-Progress
+    if (lastStatus.includes("live") || milestone === "CLOSED") {
+      completed++;
+    } else {
+      inProgress++;
+    }
+
+    // SLA Check (Achieved vs Failed)
+    if (devSla.includes("achieved") || liveSla.includes("achieved") || slaMandays.includes("on time")) {
+      slaAchievedCount++;
+    } else if (devSla.includes("not achieved") || devSla.includes("failed") || slaMandays.includes("telat") || liveSla.includes("failed")) {
+      slaFailedCount++;
+    }
+
+    // Delayed days calculation
+    let days = 0;
+    if (typeof lateDays === "number") {
+      days = lateDays;
+    } else if (typeof lateDays === "string") {
+      const match = lateDays.match(/^(-?\d+)/);
+      if (match) days = parseInt(match[1], 10);
+    }
+    if (days > 0) {
+      delayedDays += days;
+    }
+  });
+
+  const totalEvaluated = slaAchievedCount + slaFailedCount;
+  const slaPercentage = totalEvaluated > 0 ? Math.round((slaAchievedCount / totalEvaluated) * 100) : 100;
+
+  return {
+    slaPercentage,
+    inProgress,
+    completed,
+    delayedDays
+  };
+}
+
+function getFilteredAndSorted2025Data(dataArray: any[], startMonthStr?: string, endMonthStr?: string) {
+  if (!dataArray || !Array.isArray(dataArray)) return [];
+
+  const MONTH_MAP_LOWER: Record<string, number> = {
+    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, mei: 4, jun: 5,
+    jul: 6, aug: 7, agu: 7, sep: 8, oct: 9, okt: 9, nov: 10, dec: 11, des: 11, maret: 2
+  };
+
+  const startIdx = startMonthStr ? (MONTH_MAP_LOWER[startMonthStr.toLowerCase()] ?? 0) : 0;
+  const endIdx = endMonthStr ? (MONTH_MAP_LOWER[endMonthStr.toLowerCase()] ?? 11) : 11;
+
+  const filtered = dataArray.filter(item => {
+    const lastStatus = (item["Last Status"] || "").toLowerCase();
+    const milestone = (item["Milestone"] || "").toUpperCase();
+    
+    // 1. STRICT EXCLUSION: Drop canceled/terminated projects completely
+    if (lastStatus.includes("cancel") || milestone === "CANCELED" || lastStatus.includes("terminated")) return false;
+
+    // 2. DYNAMIC MONTH FILTER: Parse the creation/intake date
+    const dateStr = item["Created time"] || item["Created time "] || item["Tanggal Input Timeline"] || item["Tanggal Input Caldev"];
+    if (dateStr) {
+      const projectDate = new Date(dateStr);
+      if (projectDate && !isNaN(projectDate.getTime())) {
+        const projectMonth = projectDate.getMonth(); // 0-11
+        if (projectMonth < startIdx || projectMonth > endIdx) {
+          return false; // Exclude if outside the active month filter
+        }
+      }
+    }
+    return true;
+  });
+
+  // 3. SORTING: Newest to Oldest
+  return filtered.sort((a, b) => {
+    const dateStrA = a["Created time"] || a["Created time "] || a["Tanggal Input Timeline"] || a["Tanggal Input Caldev"] || "";
+    const dateStrB = b["Created time"] || b["Created time "] || b["Tanggal Input Timeline"] || b["Tanggal Input Caldev"] || "";
+    const dateA = new Date(dateStrA);
+    const dateB = new Date(dateStrB);
+    const timeA = !isNaN(dateA.getTime()) ? dateA.getTime() : 0;
+    const timeB = !isNaN(dateB.getTime()) ? dateB.getTime() : 0;
+    return timeB - timeA;
+  });
+}
+
 
 const INCOMING_PROJECTS_DATA = {
   "Maret": [
@@ -525,6 +629,8 @@ interface TabOverviewProps {
   allProjects?: any[];
   startMonth?: string;
   endMonth?: string;
+  startYear?: number;
+  endYear?: number;
 }
 
 function ProgressCircle({ pct, color, size = 128, strokeWidth = 12 }: { pct: number; color: string; size?: number; strokeWidth?: number }) {
@@ -692,76 +798,114 @@ function getStrictSortWeight(item: any): number {
   return 99; // Fallback
 }
 
-export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allProjects, startMonth, endMonth }: TabOverviewProps) {
+export function TabOverview({
+  dataset,
+  onNavigateToTab,
+  filteredProjects,
+  allProjects,
+  startMonth,
+  endMonth,
+  startYear = 2025,
+  endYear = 2026
+}: TabOverviewProps) {
   const { report, kpis, devSla2026, yoySla, feedback, uatRescheduled, goLive } = dataset;
   const list = filteredProjects || [];
 
-  const inProgress2026Count = useMemo(() => {
-    const rawData = (window as any).rawMasterDataset || allProjects || filteredProjects || [];
-    return getBusinessOperationalData(rawData).filter(item => {
-      const is2026 = (item["Intake"] || item["Year"] || item["_year"] || "").toString().includes("2026");
-      const lastStatus = (item["Last Status"] || "").trim().toLowerCase();
+  const rawMasterDataset = useMemo(() => {
+    return (window as any).rawMasterDataset || allProjects || [];
+  }, [allProjects]);
+
+  const activeFilter = useMemo(() => {
+    const MONTH_MAP_LOWER: Record<string, number> = {
+      jan: 1, feb: 2, mar: 3, maret: 3, apr: 4, may: 5, mei: 5, jun: 6,
+      jul: 7, aug: 8, agu: 8, sep: 9, oct: 10, okt: 10, nov: 11, dec: 12, des: 12
+    };
+    return {
+      startMonth: MONTH_MAP_LOWER[(startMonth || "Jan").toLowerCase()] ?? 1,
+      endMonth: MONTH_MAP_LOWER[(endMonth || "Dec").toLowerCase()] ?? 12,
+      startYear: startYear ?? 2025,
+      endYear: endYear ?? 2026,
+    };
+  }, [startMonth, endMonth, startYear, endYear]);
+
+  const filteredData = useMemo(() => {
+    const { startMonth: sMonth, endMonth: eMonth, startYear: sYear, endYear: eYear } = activeFilter;
+    
+    if (!rawMasterDataset || rawMasterDataset.length === 0) return { data2025: [], data2026: [] };
+
+    const filtered = rawMasterDataset.filter(item => {
+      const lastStatus = (item["Last Status"] || "").toLowerCase();
+      const milestone = (item["Milestone"] || "").toUpperCase();
       
-      const fsd = (item["(FSD) Status"] || "").trim().toLowerCase();
-      const dev = (item["(Dev) Status"] || "").trim().toLowerCase();
-      const sit = (item["(SIT) Status"] || "").trim().toLowerCase();
-      const uat = (item["(UAT) Status"] || "").trim().toLowerCase();
-      const cr = (item["(Change Request) Status"] || "").trim().toLowerCase();
+      // 1. STRICT EXCLUSION: Drop canceled/terminated projects completely
+      if (lastStatus.includes("cancel") || milestone === "CANCELED" || lastStatus.includes("terminated")) return false;
 
-      // 1. MUST be a 2026 project
-      if (!is2026) return false;
+      // 2. DYNAMIC MONTH FILTER using our robust helper
+      const { month: m, year: y } = getProjectMonthAndYear(item);
+      
+      // Check if within date range (considering Month and Year)
+      const withinYearRange = y >= sYear && y <= eYear;
+      const withinMonthRange = (m >= sMonth && m <= eMonth);
+      
+      return withinYearRange && withinMonthRange;
+    });
 
-      // 2. STRICT EXCLUSION: Drop Completed (Live) and Canceled projects
-      if (lastStatus.includes("live") || lastStatus.includes("cancel") || lastStatus.includes("terminated") || lastStatus.includes("closed")) {
+    const sortByDate = (arr: any[]) => {
+      return [...arr].sort((a, b) => {
+        const dateStrA = a["Created time"] || a["Created time "] || a["Tanggal Input Timeline"] || a["Tanggal Input Caldev"] || "";
+        const dateStrB = b["Created time"] || b["Created time "] || b["Tanggal Input Timeline"] || b["Tanggal Input Caldev"] || "";
+        const dateA = new Date(dateStrA);
+        const dateB = new Date(dateStrB);
+        const timeA = !isNaN(dateA.getTime()) ? dateA.getTime() : 0;
+        const timeB = !isNaN(dateB.getTime()) ? dateB.getTime() : 0;
+        return timeB - timeA;
+      });
+    };
+
+    const d2025 = filtered.filter(item => {
+      const { year } = getProjectMonthAndYear(item);
+      return year === 2025;
+    });
+
+    const d2026 = filtered.filter(item => {
+      const { year } = getProjectMonthAndYear(item);
+      return year === 2026;
+    });
+
+    return {
+      data2025: sortByDate(d2025),
+      data2026: sortByDate(d2026)
+    };
+  }, [rawMasterDataset, activeFilter]);
+
+  const metrics2025 = useMemo(() => {
+    return getStatic2025Metrics(filteredData.data2025);
+  }, [filteredData.data2025]);
+
+  const metrics2026 = useMemo(() => {
+    return getStatic2025Metrics(filteredData.data2026);
+  }, [filteredData.data2026]);
+
+  const inProgress2026Count = metrics2026.inProgress;
+  const inProgress2025Count = metrics2025.inProgress;
+
+  const active2025Projects = filteredData.data2025;
+  const count2025 = filteredData.data2025.length;
+  const count2026 = filteredData.data2026.length;
+
+  const activeCount2026 = useMemo(() => {
+    return filteredData.data2026.filter(item => {
+      const lastStatus = (item["Last Status"] || "").toLowerCase();
+      const milestone = (item["Milestone"] || "").toUpperCase();
+      if (lastStatus.includes("live") || lastStatus.includes("cancel") || lastStatus.includes("terminated") || lastStatus.includes("closed") || milestone === "CANCELED" || milestone === "CLOSED") {
         return false;
       }
-
-      // 3. CAPTURE ACTIVE PHASES (Progress & Queues)
-      const isFsdActive = fsd.includes("progress") || lastStatus.includes("fsd on progress");
-      const isDevActive = dev.includes("progress") || dev.includes("queue") || lastStatus.includes("dev on progress") || lastStatus.includes("dev on queue");
-      const isSitActive = sit.includes("progress") || sit.includes("queue") || lastStatus.includes("sit on progress");
-      const isUatActive = uat.includes("progress") || uat.includes("queue") || lastStatus.includes("uat on queue") || lastStatus.includes("uat on progress");
-      const isCrActive = cr.includes("progress") || lastStatus.includes("change request on progress") || lastStatus.includes("caldev");
-
-      return isFsdActive || isDevActive || isSitActive || isUatActive || isCrActive;
+      return true;
     }).length;
-  }, [allProjects, filteredProjects]);
-
-  const inProgress2025Count = useMemo(() => {
-    const rawData = (window as any).rawMasterDataset || allProjects || filteredProjects || [];
-    return getBusinessOperationalData(rawData).filter(item => {
-      const is2025 = (item["Intake"] || item["Year"] || item["_year"] || "").toString().includes("2025");
-      const lastStatus = (item["Last Status"] || "").trim().toLowerCase();
-      
-      const fsd = (item["(FSD) Status"] || "").trim().toLowerCase();
-      const dev = (item["(Dev) Status"] || "").trim().toLowerCase();
-      const sit = (item["(SIT) Status"] || "").trim().toLowerCase();
-      const uat = (item["(UAT) Status"] || "").trim().toLowerCase();
-      const cr = (item["(Change Request) Status"] || "").trim().toLowerCase();
-
-      // 1. MUST be a 2025 project
-      if (!is2025) return false;
-
-      // 2. STRICT EXCLUSION: Drop Completed (Live) and Canceled projects
-      if (lastStatus.includes("live") || lastStatus.includes("cancel") || lastStatus.includes("terminated") || lastStatus.includes("closed")) {
-        return false;
-      }
-
-      // 3. CAPTURE ACTIVE PHASES (Progress & Queues)
-      const isFsdActive = fsd.includes("progress") || lastStatus.includes("fsd on progress");
-      const isDevActive = dev.includes("progress") || dev.includes("queue") || lastStatus.includes("dev on progress") || lastStatus.includes("dev on queue");
-      const isSitActive = sit.includes("progress") || sit.includes("queue") || lastStatus.includes("sit on progress");
-      const isUatActive = uat.includes("progress") || uat.includes("queue") || lastStatus.includes("uat on queue") || lastStatus.includes("uat on progress");
-      const isCrActive = cr.includes("progress") || lastStatus.includes("change request on progress") || lastStatus.includes("caldev");
-
-      return isFsdActive || isDevActive || isSitActive || isUatActive || isCrActive;
-    }).length;
-  }, [allProjects, filteredProjects]);
+  }, [filteredData.data2026]);
 
   const item2025 = yoySla.find(item => item.year === "2025");
   const item2026 = yoySla.find(item => item.year === "2026");
-  const count2025 = item2025 ? ((item2025.inProgress || 0) + (item2025.completed || 0)) : 0;
-  const count2026 = item2026 ? ((item2026.inProgress || 0) + (item2026.completed || 0)) : 0;
 
   // Active status groups
   const activeTypes = ['Antrian', 'Dalam Proses', 'UAT', 'Monitoring', 'Hold', 'Change Request'];
@@ -1076,7 +1220,7 @@ export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allPro
             Executive Summary Overview
           </h3>
           <p className="text-xs text-gray-400 font-medium mt-0.5 font-sans">
-            Weekly Report Period: <strong className="text-gray-700">{report.date}</strong> &bull; <strong className="text-blue-600 font-semibold">{report.activeTotal} Active Projects</strong><span className="text-slate-500 font-normal ml-1">(akumulasi proyek dalam fase FSD, DEV, SIT, UAT, & Change Request)</span>
+            Weekly Report Period: <strong className="text-gray-700">{report.date}</strong> &bull; <strong className="text-blue-600 font-semibold">{activeCount2026} Active Projects</strong><span className="text-slate-500 font-normal ml-1">(akumulasi proyek dalam fase FSD, DEV, SIT, UAT, & Change Request)</span>
           </p>
         </div>
       </div>
@@ -1735,19 +1879,22 @@ export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allPro
                   <div className="border-b border-dashed border-gray-200 w-full flex justify-between"><span>0% Base-Level</span></div>
                 </div>
 
-                {yoySla.filter(f => f.year === "2025" || f.year === "2026").map((item, idx) => (
-                  <div key={idx} className="flex flex-col items-center z-10 w-24">
-                    <span className="text-[13px] font-mono font-extrabold text-gray-900 mb-2">{item.pct}%</span>
-                    <div
-                      className="rounded-t-xl w-12 transition-all duration-750 ease-out shadow-xs"
-                      style={{
-                        height: `${(item.pct / 100) * 110}px`,
-                        backgroundColor: item.year === "2026" ? '#2563EB' : '#94A3B8'
-                      }}
-                    />
-                    <span className="text-xs font-bold text-gray-500 mt-2.5 font-sans leading-none">{item.year}</span>
-                  </div>
-                ))}
+                {yoySla.filter(f => f.year === "2025" || f.year === "2026").map((item, idx) => {
+                  const pctValue = item.year === "2025" ? metrics2025.slaPercentage : metrics2026.slaPercentage;
+                  return (
+                    <div key={idx} className="flex flex-col items-center z-10 w-24">
+                      <span className="text-[13px] font-mono font-extrabold text-gray-900 mb-2">{pctValue}%</span>
+                      <div
+                        className="rounded-t-xl w-12 transition-all duration-750 ease-out shadow-xs"
+                        style={{
+                          height: `${(pctValue / 100) * 110}px`,
+                          backgroundColor: item.year === "2026" ? '#2563EB' : '#94A3B8'
+                        }}
+                      />
+                      <span className="text-xs font-bold text-gray-500 mt-2.5 font-sans leading-none">{item.year}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
             {/* Dynamic Wording Info Text Block */}
@@ -1768,51 +1915,77 @@ export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allPro
           <div className="space-y-4">
             <h4 className="text-[11px] font-bold uppercase text-gray-400 tracking-wider font-display">Development Alignment Benchmarks</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {yoySla.filter(f => f.year === "2025" || f.year === "2026").map((item) => (
-                <div
-                  key={item.year}
-                  className={`p-4 rounded-2xl border ${
-                    item.year === "2026"
-                      ? "bg-amber-50/10 border-amber-100"
-                      : "bg-blue-50/10 border-blue-100"
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-gray-500 font-sans uppercase">Periode {item.year}</span>
-                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md font-mono ${
-                      item.year === "2026"
-                        ? "bg-amber-50 text-amber-700 border border-amber-100"
-                        : "bg-blue-50 text-blue-700 border border-blue-100"
-                    }`}>
-                      {item.pct}% SLA
-                    </span>
-                  </div>
+              {yoySla.filter(f => f.year === "2025" || f.year === "2026").map((item) => {
+                if (item.year === "2025") {
+                  return (
+                    <div key="2025" className="p-4 rounded-2xl border bg-blue-50/10 border-blue-100">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-gray-500 font-sans uppercase">Periode 2025</span>
+                        <span className="font-bold text-blue-600">{metrics2025.slaPercentage}% SLA</span>
+                      </div>
 
-                  <div className="mt-4 space-y-2">
-                    {/* In Progress */}
-                    <div className="flex items-center justify-between text-xs font-sans">
-                      <span className="text-gray-400 font-medium">In-Progress:</span>
-                      <span className="font-bold text-slate-800 font-mono">
-                        {item.year === "2026" ? inProgress2026Count : item.year === "2025" ? inProgress2025Count : (item.inProgress ?? 0)} projs
+                      <div className="mt-4 space-y-2">
+                        {/* In Progress */}
+                        <div className="flex items-center justify-between text-xs font-sans">
+                          <span>In-Progress:</span>
+                          <span className="font-bold">{metrics2025.inProgress} projs</span>
+                        </div>
+
+                        {/* Completed */}
+                        <div className="flex items-center justify-between text-xs font-sans">
+                          <span>Completed:</span>
+                          <span className="font-bold">{metrics2025.completed} projs</span>
+                        </div>
+
+                        {/* Delay metrics */}
+                        <div className="flex items-center justify-between text-xs font-sans">
+                          <span>Delayed Days:</span>
+                          <span className="font-bold text-red-500">{metrics2025.delayedDays} d</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // 2026 (keeps its style)
+                return (
+                  <div
+                    key="2026"
+                    className="p-4 rounded-2xl border bg-amber-50/10 border-amber-100"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-gray-500 font-sans uppercase">Periode 2026</span>
+                      <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md font-mono bg-amber-50 text-amber-700 border border-amber-100">
+                        {metrics2026.slaPercentage}% SLA
                       </span>
                     </div>
 
-                    {/* Completed */}
-                    <div className="flex items-center justify-between text-xs font-sans">
-                      <span className="text-gray-400 font-medium font-semibold">Completed:</span>
-                      <strong className="text-gray-800 font-extrabold font-mono">{item.completed ?? 0} projs</strong>
-                    </div>
+                    <div className="mt-4 space-y-2">
+                      {/* In Progress */}
+                      <div className="flex items-center justify-between text-xs font-sans">
+                        <span className="text-gray-400 font-medium">In-Progress:</span>
+                        <span className="font-bold text-slate-800 font-mono">
+                          {metrics2026.inProgress} projs
+                        </span>
+                      </div>
 
-                    {/* Delay metrics based on lateDev / _lateDev */}
-                    <div className="flex items-center justify-between text-xs font-sans">
-                      <span className="text-gray-400 font-medium">Delayed Days:</span>
-                      <strong className="text-rose-600 font-extrabold font-mono bg-rose-50 border border-rose-100/50 px-1.5 py-0.5 rounded-md">
-                        {item.totalDelayDays ?? 0} d
-                      </strong>
+                      {/* Completed */}
+                      <div className="flex items-center justify-between text-xs font-sans">
+                        <span className="text-gray-400 font-medium font-semibold">Completed:</span>
+                        <strong className="text-gray-800 font-extrabold font-mono">{metrics2026.completed} projs</strong>
+                      </div>
+
+                      {/* Delay metrics */}
+                      <div className="flex items-center justify-between text-xs font-sans">
+                        <span className="text-gray-400 font-medium">Delayed Days:</span>
+                        <strong className="text-rose-600 font-extrabold font-mono bg-rose-50 border border-rose-100/50 px-1.5 py-0.5 rounded-md">
+                          {metrics2026.delayedDays} d
+                        </strong>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
@@ -3676,21 +3849,8 @@ export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allPro
         const startIdx = startMonth ? (MONTH_MAP_LOWER[startMonth.toLowerCase()] ?? 0) : 0;
         const endIdx = endMonth ? (MONTH_MAP_LOWER[endMonth.toLowerCase()] ?? 11) : 11;
 
-        const masterAll = allProjects || list;
-
-        const projs2025 = masterAll.filter(p => {
-          const is2025 = getProjectIntakeYear(p) === "2025";
-          if (!is2025) return false;
-          const mIdx = getProjMonthIdx(p);
-          return mIdx >= startIdx && mIdx <= endIdx;
-        });
-
-        const projs2026 = masterAll.filter(p => {
-          const is2026 = getProjectIntakeYear(p) === "2026";
-          if (!is2026) return false;
-          const mIdx = getProjMonthIdx(p);
-          return mIdx >= startIdx && mIdx <= endIdx;
-        });
+        const modalProjs2025 = filteredData.data2025;
+        const sortedProjs2026 = filteredData.data2026;
 
         // Helper to check if dev is completed
         const getDevStatus = (p: any) => {
@@ -3767,7 +3927,7 @@ export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allPro
                   <div className="flex items-center justify-between border-b border-gray-100 pb-2.5 mb-1">
                     <h4 className="text-sm font-extrabold text-blue-700 flex items-center gap-2">
                       <span className="w-2.5 h-2.5 rounded-full bg-blue-600" />
-                      Year 2025 Dataset ({projs2025.length} Projects)
+                      Year 2025 Dataset ({modalProjs2025.length} Projects)
                     </h4>
                     <span className="text-[10px] text-gray-400 font-mono">Periode 2025</span>
                   </div>
@@ -3785,32 +3945,44 @@ export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allPro
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100 select-text block">
-                        {projs2025.map((p, idx) => (
-                          <tr key={idx} className="hover:bg-gray-50/50 grid grid-cols-[80px,180px,60px,100px,60px,minmax(200px,1fr)] items-start py-2.5">
-                            <td className="px-3 font-mono text-[10.5px] text-gray-500 align-top">
-                              {(p._year || p["Year"] || "2025")} / {(p._period || p["Period"] || "—")}
-                            </td>
-                            <td className="px-3 whitespace-normal break-words align-top" title={p["Project Name"]}>
-                              <div className="font-mono text-[10px] font-bold text-gray-400">{p["Ticket"] || "—"}</div>
-                              <div className="font-bold text-gray-800 text-[11.5px] whitespace-normal break-words">{p["Project Name"]}</div>
-                            </td>
-                            <td className="px-2 text-gray-650 align-top truncate" title={p["PIC Short Name"] || p["PIC Name"] || ""}>
-                              {p["PIC Short Name"] || p["PIC Name"] || "—"}
-                            </td>
-                            <td className="px-3 align-top">
-                              <div className="status-badge text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 uppercase tracking-tight inline-block whitespace-nowrap">
-                                {p["Last Status"] || "—"}
-                              </div>
-                            </td>
-                            <td className="px-3 text-right font-mono text-xs align-top">
-                              {getDelayVal(p)}
-                            </td>
-                            <td className="px-3 text-left text-[11px] text-slate-600 leading-[1.4] whitespace-normal break-words align-top" title={getProfessionalReason(p["(Dev) Kategori Alasan Terlambat >=2022"] || "")}>
-                              {getProfessionalReason(p["(Dev) Kategori Alasan Terlambat >=2022"] || "")}
-                            </td>
-                          </tr>
-                        ))}
-                        {projs2025.length === 0 && (
+                        {modalProjs2025.map((p, idx) => {
+                          const isCompleted = (p["Last Status"] || "").toLowerCase().includes("live") || p["Milestone"] === "CLOSED";
+                          return (
+                            <tr key={idx} className="hover:bg-gray-50/50 grid grid-cols-[80px,180px,60px,100px,60px,minmax(200px,1fr)] items-start py-2.5">
+                              <td className="px-3 font-mono text-[10.5px] text-gray-500 align-top">
+                                {(p._year || p["Year"] || "2025")} / {(p._period || p["Period"] || "—")}
+                              </td>
+                              <td className="px-3 whitespace-normal break-words align-top" title={p["Project Name"]}>
+                                <div className="font-mono text-[10px] font-bold text-gray-400">{p["Ticket"] || "—"}</div>
+                                <div className="font-bold text-gray-800 text-[11.5px] whitespace-normal break-words">{p["Project Name"]}</div>
+                                <div className="mt-2">
+                                  <span className={`px-2 py-1 text-[10px] font-bold rounded-md cursor-pointer hover:opacity-80 transition-opacity inline-block ${
+                                    isCompleted 
+                                      ? "bg-green-100 text-green-700 border border-green-200" 
+                                      : "bg-amber-100 text-amber-700 border border-amber-200"
+                                  }`}>
+                                    {isCompleted ? "Completed / Live" : "In Progress"}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-2 text-gray-650 align-top truncate" title={p["PIC Short Name"] || p["PIC Name"] || ""}>
+                                {p["PIC Short Name"] || p["PIC Name"] || "—"}
+                              </td>
+                              <td className="px-3 align-top">
+                                <div className="status-badge text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 uppercase tracking-tight inline-block whitespace-nowrap">
+                                  {p["Last Status"] || "—"}
+                                </div>
+                              </td>
+                              <td className="px-3 text-right font-mono text-xs align-top">
+                                {getDelayVal(p)}
+                              </td>
+                              <td className="px-3 text-left text-[11px] text-slate-600 leading-[1.4] whitespace-normal break-words align-top" title={getProfessionalReason(p["(Dev) Kategori Alasan Terlambat >=2022"] || "")}>
+                                {getProfessionalReason(p["(Dev) Kategori Alasan Terlambat >=2022"] || "")}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {modalProjs2025.length === 0 && (
                           <tr className="grid grid-cols-1">
                             <td className="py-12 text-center text-xs text-gray-400 italic">
                               No Year 2025 projects available for the current filter scope.
@@ -3827,7 +3999,7 @@ export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allPro
                   <div className="flex items-center justify-between border-b border-gray-100 pb-2.5 mb-1">
                     <h4 className="text-sm font-extrabold text-amber-600 flex items-center gap-2">
                       <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-                      Year 2026 Dataset ({projs2026.length} Projects)
+                      Year 2026 Dataset ({sortedProjs2026.length} Projects)
                     </h4>
                     <span className="text-[10px] text-gray-400 font-mono font-bold">Periode 2026</span>
                   </div>
@@ -3845,32 +4017,44 @@ export function TabOverview({ dataset, onNavigateToTab, filteredProjects, allPro
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-101 select-text block">
-                        {projs2026.map((p, idx) => (
-                          <tr key={idx} className="hover:bg-amber-50/[0.04] grid grid-cols-[80px,180px,60px,100px,60px,minmax(200px,1fr)] items-start py-2.5">
-                            <td className="px-3 font-mono text-[10.5px] text-gray-500 align-top">
-                              {(p._year || p["Year"] || "2026")} / {(p._period || p["Period"] || "—")}
-                            </td>
-                            <td className="px-3 whitespace-normal break-words align-top" title={p["Project Name"]}>
-                              <div className="font-mono text-[10px] font-bold text-gray-400">{p["Ticket"] || "—"}</div>
-                              <div className="font-bold text-gray-800 text-[11.5px] whitespace-normal break-words">{p["Project Name"]}</div>
-                            </td>
-                            <td className="px-2 text-gray-650 align-top truncate" title={p["PIC Short Name"] || p["PIC Name"] || ""}>
-                              {p["PIC Short Name"] || p["PIC Name"] || "—"}
-                            </td>
-                            <td className="px-3 align-top">
-                              <div className="status-badge text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 uppercase tracking-tight inline-block whitespace-nowrap">
-                                {p["Last Status"] || "—"}
-                              </div>
-                            </td>
-                            <td className="px-3 text-right font-mono text-xs align-top">
-                              {getDelayVal(p)}
-                            </td>
-                            <td className="px-3 text-left text-[11px] text-slate-600 leading-[1.4] whitespace-normal break-words align-top" title={getProfessionalReason(p["(Dev) Kategori Alasan Terlambat >=2022"] || "")}>
-                              {getProfessionalReason(p["(Dev) Kategori Alasan Terlambat >=2022"] || "")}
-                            </td>
-                          </tr>
-                        ))}
-                        {projs2026.length === 0 && (
+                        {sortedProjs2026.map((p, idx) => {
+                          const isCompleted = (p["Last Status"] || "").toLowerCase().includes("live") || p["Milestone"] === "CLOSED";
+                          return (
+                            <tr key={idx} className="hover:bg-amber-50/[0.04] grid grid-cols-[80px,180px,60px,100px,60px,minmax(200px,1fr)] items-start py-2.5">
+                              <td className="px-3 font-mono text-[10.5px] text-gray-500 align-top">
+                                {(p._year || p["Year"] || "2026")} / {(p._period || p["Period"] || "—")}
+                              </td>
+                              <td className="px-3 whitespace-normal break-words align-top" title={p["Project Name"]}>
+                                <div className="font-mono text-[10px] font-bold text-gray-400">{p["Ticket"] || "—"}</div>
+                                <div className="font-bold text-gray-800 text-[11.5px] whitespace-normal break-words">{p["Project Name"]}</div>
+                                <div className="mt-2">
+                                  <span className={`px-2 py-1 text-[10px] font-bold rounded-md cursor-pointer hover:opacity-80 transition-opacity inline-block ${
+                                    isCompleted 
+                                      ? "bg-green-100 text-green-700 border border-green-200" 
+                                      : "bg-amber-100 text-amber-700 border border-amber-200"
+                                  }`}>
+                                    {isCompleted ? "Completed / Live" : "In Progress"}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-2 text-gray-650 align-top truncate" title={p["PIC Short Name"] || p["PIC Name"] || ""}>
+                                {p["PIC Short Name"] || p["PIC Name"] || "—"}
+                              </td>
+                              <td className="px-3 align-top">
+                                <div className="status-badge text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 uppercase tracking-tight inline-block whitespace-nowrap">
+                                  {p["Last Status"] || "—"}
+                                </div>
+                              </td>
+                              <td className="px-3 text-right font-mono text-xs align-top">
+                                {getDelayVal(p)}
+                              </td>
+                              <td className="px-3 text-left text-[11px] text-slate-600 leading-[1.4] whitespace-normal break-words align-top" title={getProfessionalReason(p["(Dev) Kategori Alasan Terlambat >=2022"] || "")}>
+                                {getProfessionalReason(p["(Dev) Kategori Alasan Terlambat >=2022"] || "")}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {sortedProjs2026.length === 0 && (
                           <tr className="grid grid-cols-1">
                             <td className="py-12 text-center text-xs text-gray-400 italic">
                               No Year 2026 projects available for the current filter scope.
